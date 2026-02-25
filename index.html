@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Hand Particle Conductor v5.0</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Inter', sans-serif; }
+        #ui { position: absolute; top: 30px; left: 30px; color: #fff; pointer-events: none; z-index: 10; }
+        #label { font-size: 3.5rem; font-weight: 900; letter-spacing: -2px; text-transform: uppercase; color: #00ffff; margin: 0; }
+        #stats { font-size: 1rem; color: #ff00ff; font-weight: bold; font-family: monospace; }
+        
+        #video-container { position: absolute; bottom: 20px; right: 20px; width: 240px; height: 180px; border-radius: 12px; overflow: hidden; border: 2px solid #0ff; box-shadow: 0 0 15px rgba(0,255,255,0.5); }
+        #webcam { transform: scaleX(-1); display: none; }
+        #output_canvas { transform: scaleX(-1); width: 100%; height: 100%; object-fit: cover; background: #111; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <p style="letter-spacing: 3px; font-size: 0.7rem; opacity: 0.7;">NEURAL PARTICLE ENGINE</p>
+        <h1 id="label">Sphere</h1>
+        <div id="stats">Fingers: 0 | Spread: 1.0</div>
+    </div>
+
+    <div id="video-container">
+        <video id="webcam" autoplay></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+
+    <script>
+        let scene, camera, renderer, points, geometry;
+        const COUNT = 12000; 
+        let currentIdx = -1;
+        const shapeNames = ['Sphere', 'Heart', 'Star', 'Saturn', 'Flower', 'DNA'];
+
+        // --- 1. Shape Factory ---
+        const gens = {
+            Sphere: () => {
+                const a = new Float32Array(COUNT * 3);
+                for(let i=0; i<COUNT; i++){
+                    const u = Math.random(), v = Math.random();
+                    const t = 2 * Math.PI * u, p = Math.acos(2 * v - 1);
+                    a[i*3] = 7 * Math.sin(p) * Math.cos(t);
+                    a[i*3+1] = 7 * Math.sin(p) * Math.sin(t);
+                    a[i*3+2] = 7 * Math.cos(p);
+                }
+                return a;
+            },
+            Heart: () => {
+                const a = new Float32Array(COUNT * 3);
+                for(let i=0; i<COUNT; i++){
+                    const t = Math.random() * Math.PI * 2;
+                    a[i*3] = 16 * Math.pow(Math.sin(t), 3) * 0.45;
+                    a[i*3+1] = (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)) * 0.45;
+                    a[i*3+2] = (Math.random() - 0.5) * 3;
+                }
+                return a;
+            },
+            Star: () => {
+                const a = new Float32Array(COUNT * 3);
+                for(let i=0; i<COUNT; i++) {
+                    const t = Math.random() * Math.PI * 2, r = 5 + 3 * Math.cos(5 * t);
+                    a[i*3] = r * Math.cos(t) * 1.5; a[i*3+1] = r * Math.sin(t) * 1.5; a[i*3+2] = (Math.random()-0.5)*2;
+                }
+                return a;
+            },
+            Saturn: () => {
+                const a = new Float32Array(COUNT * 3);
+                for(let i=0; i<COUNT; i++){
+                    if(i < COUNT*0.4){
+                        const u=Math.random(), v=Math.random(), t=2*Math.PI*u, p=Math.acos(2*v-1);
+                        a[i*3]=4.5*Math.sin(p)*Math.cos(t); a[i*3+1]=4.5*Math.sin(p)*Math.sin(t); a[i*3+2]=4.5*Math.cos(p);
+                    } else {
+                        const r=7+Math.random()*4, t=Math.random()*Math.PI*2;
+                        a[i*3]=Math.cos(t)*r; a[i*3+1]=Math.sin(t)*r*0.1; a[i*3+2]=Math.sin(t)*r;
+                    }
+                }
+                return a;
+            },
+            Flower: () => {
+                const a = new Float32Array(COUNT * 3);
+                for(let i=0; i<COUNT; i++){
+                    const t = Math.random()*Math.PI*2, r = 8 * Math.sin(6 * t);
+                    a[i*3] = r * Math.cos(t); a[i*3+1] = r * Math.sin(t); a[i*3+2] = Math.random()*2;
+                }
+                return a;
+            },
+            DNA: () => {
+                const a = new Float32Array(COUNT * 3);
+                for(let i=0; i<COUNT; i++){
+                    const t = Math.random()*Math.PI*4, s = Math.random()>0.5?1:-1;
+                    a[i*3] = Math.cos(t)*4*s; a[i*3+1] = (t-6)*3; a[i*3+2] = Math.sin(t)*4*s;
+                }
+                return a;
+            }
+        };
+
+        // --- 2. Three.js Engine ---
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            camera.position.z = 25;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(gens.Sphere(), 3));
+
+            const material = new THREE.PointsMaterial({
+                size: 0.15,
+                color: 0x00ffff,
+                transparent: true,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+
+            points = new THREE.Points(geometry, material);
+            scene.add(points);
+        }
+
+        function morph(idx) {
+            if (idx === currentIdx || idx < 0 || idx >= shapeNames.length) return;
+            currentIdx = idx;
+            document.getElementById('label').innerText = shapeNames[idx];
+            
+            gsap.to(geometry.attributes.position.array, {
+                duration: 1.2,
+                endArray: gens[shapeNames[idx]](),
+                ease: "expo.out",
+                onUpdate: () => geometry.attributes.position.needsUpdate = true
+            });
+        }
+
+        // --- 3. Hand Tracking & Gesture Logic ---
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+
+        hands.onResults((res) => {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(res.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+                const landmarks = res.multiHandLandmarks[0];
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00ffff', lineWidth: 4});
+                drawLandmarks(canvasCtx, landmarks, {color: '#ff00ff', lineWidth: 1, radius: 3});
+
+                // --- GESTURE 1: FINGER COUNT (Shape Change) ---
+                let count = 0;
+                if (landmarks[8].y < landmarks[6].y) count++;   // Index
+                if (landmarks[12].y < landmarks[10].y) count++; // Middle
+                if (landmarks[16].y < landmarks[14].y) count++; // Ring
+                if (landmarks[20].y < landmarks[18].y) count++; // Pinky
+                if (Math.abs(landmarks[4].x - landmarks[0].x) > Math.abs(landmarks[3].x - landmarks[0].x)) count++; // Thumb
+                morph(count);
+
+                // --- GESTURE 2: PINCH DISTANCE (Particle Spread) ---
+                // Distance between Thumb Tip (4) and Index Tip (8)
+                const dx = landmarks[4].x - landmarks[8].x;
+                const dy = landmarks[4].y - landmarks[8].y;
+                const pinchDist = Math.sqrt(dx*dx + dy*dy);
+                
+                // Map pinch to Scale (Expansion)
+                // 0.05 (pinch) -> Scale 1.0 | 0.4 (wide) -> Scale 5.0
+                const spread = THREE.MathUtils.mapLinear(pinchDist, 0.05, 0.4, 0.5, 6.0);
+                points.scale.setScalar(spread);
+
+                // --- GESTURE 3: HAND DEPTH (Zoom) ---
+                // We use the distance between wrist (0) and middle finger base (9) as a proxy for how close hand is
+                const hx = landmarks[0].x - landmarks[9].x;
+                const hy = landmarks[0].y - landmarks[9].y;
+                const handSize = Math.sqrt(hx*hx + hy*hy);
+                const zoom = THREE.MathUtils.mapLinear(handSize, 0.1, 0.5, 40, 10);
+                camera.position.z = zoom;
+
+                // Update UI
+                document.getElementById('stats').innerText = `Fingers: ${count} | Spread: ${spread.toFixed(1)}x`;
+                
+                // Color shift based on spread
+                points.material.color.setHSL(0.5 + (spread/10), 1, 0.5);
+                points.rotation.y += 0.01;
+            }
+            canvasCtx.restore();
+        });
+
+        const cam = new Camera(videoElement, {
+            onFrame: async () => await hands.send({image: videoElement}),
+            width: 640, height: 480
+        });
+
+        init();
+        cam.start();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.onresize = () => {
+            camera.aspect = window.innerWidth/window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        };
+    </script>
+</body>
+</html>
